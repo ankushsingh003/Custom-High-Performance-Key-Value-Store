@@ -35,5 +35,20 @@ void test_wal() {
 int main() {
     std::cout << "Running KV Store Tests...\n";
     test_wal();
+    test_memtable();
     return 0;
 }
+
+#include "MemTable.hpp"
+void test_memtable() {
+    lsm::MemTable mt;
+    mt.Put("k1", "v1");
+    mt.Put("k2", "v2");
+    assert(mt.Get("k1").value() == "v1");
+    assert(mt.Get("k2").value() == "v2");
+    assert(!mt.Get("k3").has_value());
+    mt.Clear();
+    assert(!mt.Get("k1").has_value());
+    std::cout << "MemTable tests passed.\n";
+}
+
