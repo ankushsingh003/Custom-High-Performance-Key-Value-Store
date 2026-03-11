@@ -108,5 +108,25 @@ int main() {
     test_memtable();
     test_sstable();
     test_kvstore();
+    test_compactor();
     return 0;
 }
+
+#include "Compactor.hpp"
+void test_compactor() {
+    std::filesystem::path test_dir = "./test_compactor";
+    std::filesystem::create_directories(test_dir);
+    auto sst1 = test_dir / "1.sst";
+    auto sst2 = test_dir / "2.sst";
+    { lsm::MemTable mt; mt.Put("a", "1"); mt.Put("b", "1"); lsm::SSTableWriter::Flush(mt, sst1); }
+    { lsm::MemTable mt; mt.Put("b", "2"); mt.Put("c", "2"); lsm::SSTableWriter::Flush(mt, sst2); }
+    auto compacted = test_dir / "compacted.sst";
+    lsm::Compactor::Compact({sst1, sst2}, compacted);
+    lsm::SSTableReader reader(compacted);
+    assert(reader.Get("a").value() == "1");
+    assert(reader.Get("b").value() == "2");
+    assert(reader.Get("c").value() == "2");
+    std::filesystem::remove_all(test_dir);
+    std::cout << "Compactor tests passed.\n";
+}
+
