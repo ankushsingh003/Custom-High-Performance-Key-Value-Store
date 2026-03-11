@@ -1,4 +1,6 @@
 #include "WAL.hpp"
+#include "MemTable.hpp"
+#include "SSTable.hpp"
 #include <iostream>
 #include <cassert>
 #include <filesystem>
@@ -32,14 +34,6 @@ void test_wal() {
     std::cout << "WAL tests passed.\n";
 }
 
-int main() {
-    std::cout << "Running KV Store Tests...\n";
-    test_wal();
-    test_memtable();
-    return 0;
-}
-
-#include "MemTable.hpp"
 void test_memtable() {
     lsm::MemTable mt;
     mt.Put("k1", "v1");
@@ -52,3 +46,37 @@ void test_memtable() {
     std::cout << "MemTable tests passed.\n";
 }
 
+void test_sstable() {
+    std::filesystem::path test_file = "./test_sstable.sst";
+    
+    // Write
+    {
+        lsm::MemTable mt;
+        mt.Put("a", "apple");
+        mt.Put("b", "banana");
+        mt.Put("c", "carrot");
+        
+        lsm::SSTableWriter::Flush(mt, test_file);
+    }
+    
+    // Read
+    {
+        lsm::SSTableReader reader(test_file);
+        assert(reader.Get("a").value() == "apple");
+        assert(reader.Get("b").value() == "banana");
+        assert(reader.Get("c").value() == "carrot");
+        assert(!reader.Get("d").has_value());
+        assert(!reader.Get("0").has_value()); // Something smaller than everything
+    }
+    
+    std::filesystem::remove(test_file);
+    std::cout << "SSTable tests passed.\n";
+}
+
+int main() {
+    std::cout << "Running KV Store Tests...\n";
+    test_wal();
+    test_memtable();
+    test_sstable();
+    return 0;
+}
