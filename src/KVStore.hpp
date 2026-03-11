@@ -11,8 +11,12 @@
 #include <iostream>
 #include <algorithm>
 #include <string>
+#include <shared_mutex>
+#include <mutex>
 
 namespace lsm {
+
+const std::string TOMBSTONE = "__LSM_TOMBSTONE__";
 
 /**
  * @class KVStore
@@ -26,6 +30,7 @@ public:
           wal_(db_dir),
           memtable_()
     {
+        std::unique_lock lock(mutex_);
         if (!std::filesystem::exists(db_dir_)) {
             std::filesystem::create_directories(db_dir_);
         }
@@ -36,7 +41,7 @@ public:
         // Recover WAL and populate initial MemTable
         auto recovered_wal = wal_.Recover();
         for (const auto& [k, v] : recovered_wal) {
-            memtable_.Put(k, v);
+            memtable_.Put(std::string(k.data(), k.size()), std::string(v.data(), v.size()));
         }
         
         // If memtable grew past limit during recovery, flush it
@@ -48,6 +53,7 @@ public:
      */
     template <Serializable K, Serializable V>
     void Put(const K& key, const V& value) {
+        std::unique_lock lock(mutex_);
         // 1. Write to WAL synchronously to ensure atomicity and durability
         wal_.Append(key, value);
 
@@ -64,16 +70,26 @@ public:
     }
 
     /**
+     * @brief Deletes a key by writing a tombstone.
+     */
+    template <Serializable K>
+    void Del(const K& key) {
+        Put(key, TOMBSTONE);
+    }
+
+    /**
      * @brief Retrieves a value for a given key. Checks MemTable then SSTables chronologically.
      */
     template <Serializable K>
     std::optional<std::string> Get(const K& key) const {
+        std::shared_lock lock(mutex_);
         auto key_span = to_span(key);
         std::string pk(reinterpret_cast<const char*>(key_span.data()), key_span.size());
 
         // 1. Quick route: Check active MemTable
         auto mem_val = memtable_.Get(pk);
         if (mem_val.has_value()) {
+            if (mem_val.value() == TOMBSTONE) return std::nullopt;
             return mem_val;
         }
 
@@ -81,6 +97,7 @@ public:
         for (auto it = sstables_.rbegin(); it != sstables_.rend(); ++it) {
             auto sst_val = (*it)->Get(pk);
             if (sst_val.has_value()) {
+                if (sst_val.value() == TOMBSTONE) return std::nullopt;
                 return sst_val;
             }
         }
@@ -116,6 +133,8 @@ private:
     
     std::vector<std::unique_ptr<SSTableReader>> sstables_;
     uint64_t next_sstable_id_{1};
+
+    mutable std::shared_mutex mutex_;
 
     void DiscoverSSTables() {
         std::vector<std::filesystem::path> sst_paths;

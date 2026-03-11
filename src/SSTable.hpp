@@ -1,6 +1,7 @@
 #pragma once
 
 #include "MemTable.hpp"
+#include "BloomFilter.hpp"
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -62,8 +63,20 @@ public:
             out.write(reinterpret_cast<const char*>(&offset), sizeof(offset));
         }
 
-        // Write trailer: 8 bytes for index offset
+        // --- Bloom Filter ---
+        uint64_t bloom_offset = out.tellp();
+        BloomFilter filter(entry_count, 0.01); // 1% false positive rate
+        for (auto it = memtable.begin(); it != memtable.end(); ++it) {
+            filter.Add(std::string(it->first.data(), it->first.size()));
+        }
+        auto bloom_data = filter.Serialize();
+        uint64_t bloom_size = bloom_data.size();
+        out.write(reinterpret_cast<const char*>(&bloom_size), sizeof(bloom_size));
+        out.write(reinterpret_cast<const char*>(bloom_data.data()), bloom_data.size());
+
+        // Write trailer: 8 bytes for index offset, 8 bytes for bloom offset
         out.write(reinterpret_cast<const char*>(&index_offset), sizeof(index_offset));
+        out.write(reinterpret_cast<const char*>(&bloom_offset), sizeof(bloom_offset));
     }
 };
 
@@ -80,6 +93,11 @@ public:
     }
 
     std::optional<std::string> Get(const std::string& target_key) const {
+        // 1. Check Bloom Filter first
+        if (!bloom_filter_.MayContain(target_key)) {
+            return std::nullopt;
+        }
+
         if (sparse_index_.empty()) return std::nullopt;
 
         KeyType key_target(target_key);
@@ -123,7 +141,9 @@ public:
 private:
     std::filesystem::path file_path_;
     std::map<KeyType, uint64_t> sparse_index_;
+    BloomFilter bloom_filter_;
     uint64_t index_offset_{0};
+    uint64_t bloom_offset_{0};
 
     void LoadIndex() {
         std::ifstream in(file_path_, std::ios::binary);
@@ -131,11 +151,14 @@ private:
 
         in.seekg(0, std::ios::end);
         uint64_t file_size = in.tellg();
-        if (file_size < sizeof(uint64_t)) return;
+        // Trailer is now 16 bytes: 8 for index_offset, 8 for bloom_offset
+        if (file_size < 2 * sizeof(uint64_t)) return;
 
-        in.seekg(file_size - sizeof(uint64_t), std::ios::beg);
+        in.seekg(file_size - 2 * sizeof(uint64_t), std::ios::beg);
         in.read(reinterpret_cast<char*>(&index_offset_), sizeof(index_offset_));
+        in.read(reinterpret_cast<char*>(&bloom_offset_), sizeof(bloom_offset_));
 
+        // Load Index
         in.seekg(index_offset_);
         uint64_t index_size = 0;
         in.read(reinterpret_cast<char*>(&index_size), sizeof(index_size));
@@ -152,6 +175,17 @@ private:
             in.read(reinterpret_cast<char*>(&offset), sizeof(offset));
 
             sparse_index_[key] = offset;
+        }
+
+        // Load Bloom Filter
+        in.seekg(bloom_offset_);
+        uint64_t bloom_data_size = 0;
+        in.read(reinterpret_cast<char*>(&bloom_data_size), sizeof(bloom_data_size));
+        
+        if (bloom_data_size > 0) {
+            std::vector<uint8_t> bloom_data(bloom_data_size);
+            in.read(reinterpret_cast<char*>(bloom_data.data()), bloom_data_size);
+            bloom_filter_.Deserialize(bloom_data);
         }
     }
 };

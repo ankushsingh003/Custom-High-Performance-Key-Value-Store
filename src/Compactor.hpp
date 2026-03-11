@@ -11,6 +11,7 @@
 #include <optional>
 #include <memory>
 #include <stdexcept>
+#include "KVStore.hpp" // For TOMBSTONE constant 
 
 namespace lsm {
 
@@ -36,11 +37,13 @@ public:
 
             in.seekg(0, std::ios::end);
             uint64_t file_size = in.tellg();
-            if (file_size < sizeof(uint64_t)) continue;
+            if (file_size < 2 * sizeof(uint64_t)) continue;
 
-            in.seekg(file_size - sizeof(uint64_t), std::ios::beg);
+            in.seekg(file_size - 2 * sizeof(uint64_t), std::ios::beg);
             uint64_t index_offset;
+            uint64_t bloom_offset;
             in.read(reinterpret_cast<char*>(&index_offset), sizeof(index_offset));
+            in.read(reinterpret_cast<char*>(&bloom_offset), sizeof(bloom_offset));
 
             in.seekg(0, std::ios::beg);
 
@@ -104,7 +107,20 @@ public:
             out.write(reinterpret_cast<const char*>(&offset), sizeof(offset));
         }
 
+        // --- Bloom Filter ---
+        uint64_t bloom_offset = out.tellp();
+        BloomFilter filter(entry_count, 0.01);
+        for (const auto& [key, val] : merged_data) {
+            filter.Add(key);
+        }
+        auto bloom_data = filter.Serialize();
+        uint64_t bloom_size = bloom_data.size();
+        out.write(reinterpret_cast<const char*>(&bloom_size), sizeof(bloom_size));
+        out.write(reinterpret_cast<const char*>(bloom_data.data()), bloom_data.size());
+
+        // Write trailer: 8 bytes for index offset, 8 bytes for bloom offset
         out.write(reinterpret_cast<const char*>(&index_offset), sizeof(index_offset));
+        out.write(reinterpret_cast<const char*>(&bloom_offset), sizeof(bloom_offset));
     }
 };
 
