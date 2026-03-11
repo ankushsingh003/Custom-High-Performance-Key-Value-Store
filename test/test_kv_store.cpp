@@ -1,12 +1,14 @@
 #include "WAL.hpp"
 #include "MemTable.hpp"
 #include "SSTable.hpp"
+#include "KVStore.hpp"
 #include <iostream>
 #include <cassert>
 #include <filesystem>
 
 void test_wal() {
     std::filesystem::path test_dir = "./test_db";
+    std::filesystem::remove_all(test_dir);
     
     // Write
     {
@@ -73,10 +75,38 @@ void test_sstable() {
     std::cout << "SSTable tests passed.\n";
 }
 
+void test_kvstore() {
+    std::filesystem::path test_dir = "./test_kvstore_db";
+    std::filesystem::remove_all(test_dir);
+    
+    {
+        lsm::KVStore store(test_dir, 100); // Small limit to force flush
+        store.Put("key1", "val1");
+        store.Put("key2", "val2");
+        store.Put("key3", "val3"); // This should trigger a flush to SSTable
+        
+        assert(store.Get("key1").value() == "val1");
+        assert(store.Get("key2").value() == "val2");
+        assert(store.Get("key3").value() == "val3");
+    } // Store is destroyed
+    
+    // Recover
+    {
+        lsm::KVStore store2(test_dir, 100);
+        assert(store2.Get("key1").value() == "val1");
+        assert(store2.Get("key2").value() == "val2");
+        assert(store2.Get("key3").value() == "val3");
+    }
+    
+    std::filesystem::remove_all(test_dir);
+    std::cout << "KVStore Engine API tests passed.\n";
+}
+
 int main() {
     std::cout << "Running KV Store Tests...\n";
     test_wal();
     test_memtable();
     test_sstable();
+    test_kvstore();
     return 0;
 }
